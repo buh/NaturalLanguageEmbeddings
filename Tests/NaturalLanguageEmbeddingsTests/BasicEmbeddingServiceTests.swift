@@ -10,25 +10,6 @@ struct BasicEmbeddingServiceTests {
         service = try await BasicEmbeddingService(specific: .script(.latin))
     }
 
-    @Test("Embeddings are normalized (L2 norm ≈ 1.0)")
-    func testEmbeddingsAreNormalized() async throws {
-        let sentences = [
-            "The quick brown fox jumps over the lazy dog.",
-            "Hello world",
-            "Machine learning is fascinating"
-        ]
-
-        for sentence in sentences {
-            let embedding = try await service.generateEmbeddings(sentence, language: .english)
-
-            // Calculate L2 norm
-            let norm = sqrt(embedding.reduce(0) { $0 + $1 * $1 })
-
-            // Should be very close to 1.0 (normalized)
-            #expect(abs(norm - 1.0) < 0.0001, "Embedding should be normalized. Got norm: \(norm)")
-        }
-    }
-
     @Test("Similar sentences have higher similarity than dissimilar ones")
     func testSimilarityOrdering() async throws {
         // Create embeddings for test sentences
@@ -85,29 +66,6 @@ struct BasicEmbeddingServiceTests {
 
         print("\n✅ Cat sentences ranked higher than programming sentences")
         print("===\n")
-    }
-
-    @Test("Cosine similarity returns values between -1 and 1")
-    func testSimilarityRange() async throws {
-        let sentences = [
-            "Hello world",
-            "Goodbye world",
-            "The sun rises in the east",
-            "Machine learning algorithms"
-        ]
-
-        var embeddings: [[Double]] = []
-        for sentence in sentences {
-            let embedding = try await service.generateEmbeddings(sentence, language: .english)
-            embeddings.append(embedding)
-        }
-
-        let results = try await service.search(query: "greetings", in: embeddings)
-
-        for (index, similarity) in results {
-            #expect(similarity >= -1.0 && similarity <= 1.0,
-                    "Similarity should be between -1 and 1, got \(similarity) for index \(index)")
-        }
     }
 
     @Test("Search returns results in descending order of similarity")

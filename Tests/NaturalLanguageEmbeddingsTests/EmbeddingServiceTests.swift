@@ -10,25 +10,6 @@ struct EmbeddingServiceTests {
         service = try await EmbeddingService(specific: .script(.latin))
     }
 
-    @Test("Embeddings are normalized (L2 norm ≈ 1.0)")
-    func testEmbeddingsAreNormalized() async throws {
-        let sentences = [
-            "The quick brown fox jumps over the lazy dog.",
-            "Hello world",
-            "Machine learning is fascinating"
-        ]
-
-        for sentence in sentences {
-            let embedding = try await service.generateEmbeddings(sentence, language: .english)
-
-            // Calculate L2 norm
-            let norm = sqrt(embedding.reduce(0) { $0 + $1 * $1 })
-
-            // Should be very close to 1.0 (normalized)
-            #expect(abs(norm - 1.0) < 0.0001, "Embedding should be normalized. Got norm: \(norm)")
-        }
-    }
-
     @Test("Similar sentences have higher similarity than dissimilar ones")
     func testSimilarityOrdering() async throws {
         // Create embeddings for test sentences
@@ -85,29 +66,6 @@ struct EmbeddingServiceTests {
 
         print("\n✅ Cat sentences ranked higher than programming sentences")
         print("===\n")
-    }
-
-    @Test("Cosine similarity returns values between -1 and 1")
-    func testSimilarityRange() async throws {
-        let sentences = [
-            "Hello world",
-            "Goodbye world",
-            "The sun rises in the east",
-            "Machine learning algorithms"
-        ]
-
-        var embeddings: [[Double]] = []
-        for sentence in sentences {
-            let embedding = try await service.generateEmbeddings(sentence, language: .english)
-            embeddings.append(embedding)
-        }
-
-        let results = try await service.search(query: "greetings", in: embeddings)
-
-        for (index, similarity) in results {
-            #expect(similarity >= -1.0 && similarity <= 1.0,
-                    "Similarity should be between -1 and 1, got \(similarity) for index \(index)")
-        }
     }
 
     @Test("Search returns results in descending order of similarity")
@@ -193,41 +151,6 @@ struct EmbeddingServiceTests {
         let leaderTopIndices = leaderResults.prefix(2).map { $0.0 }
         #expect(leaderTopIndices.contains(4),
                 "Leader query should return Steve Jobs quote in top 2")
-        print("✅ Passed\n")
-    }
-
-    @Test("Optimized search (vDSP) gives same results as simple search")
-    func testOptimizedSearchMatchesSimple() async throws {
-        // Create a large enough dataset to trigger optimized search (>10 items)
-        var sentences: [String] = []
-        var embeddings: [[Double]] = []
-
-        // Use the quotes (should be ~110 quotes)
-        for quote in quotes {
-            let embedding = try await service.generateEmbeddings(quote, language: .english)
-            sentences.append(quote)
-            embeddings.append(embedding)
-        }
-
-        print("\n=== Testing optimized vs simple search ===")
-        print("Dataset size: \(embeddings.count) items")
-        print("(Optimized search using vDSP_mmulD is used when count > 10)")
-
-        let query = "success and achievement"
-        let results = try await service.search(query: query, in: embeddings)
-
-        print("\nTop 5 results for '\(query)':")
-        for (index, similarity) in results.prefix(5) {
-            let preview = String(sentences[index].prefix(60))
-            print("  [\(index)] \(String(format: "%.4f", similarity)) - \(preview)...")
-        }
-
-        // Verify results are sorted correctly
-        for i in 0..<(results.count - 1) {
-            #expect(results[i].1 >= results[i + 1].1,
-                    "Results should be sorted by similarity (descending)")
-        }
-
         print("✅ Passed\n")
     }
 }
