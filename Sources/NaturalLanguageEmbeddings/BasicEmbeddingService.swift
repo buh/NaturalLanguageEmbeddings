@@ -5,7 +5,7 @@ actor BasicEmbeddingService {
     var isModelAvailable: Bool { model.hasAvailableAssets }
     
     private let model: NLContextualEmbedding
-
+    
     init(specific: ModelSpecific = .script(.latin)) async throws {
         let model: NLContextualEmbedding?
         switch specific {
@@ -75,13 +75,25 @@ extension BasicEmbeddingService {
         return vector.map { $0 / norm }
     }
     
-    func search(query: String, in embeddings: [[Double]]) async throws -> [(Int, Double)] {
+    func search(
+        query: String,
+        in embeddings: [[Double]],
+        minimumSimilarity: Double? = nil
+    ) async throws -> [(Int, Double)] {
         let queryEmbedding = try await generateEmbeddings(query)
         var results: [(Int, Double)] = []
         
         for (index, embedding) in embeddings.enumerated() {
             let similarity = cosineSimilarity(queryEmbedding, embedding)
-            results.append((index, similarity))
+            
+            // Filter during collection if threshold is specified
+            if let threshold = minimumSimilarity {
+                if similarity >= threshold {
+                    results.append((index, similarity))
+                }
+            } else {
+                results.append((index, similarity))
+            }
         }
         
         return results.sorted { $0.1 > $1.1 }

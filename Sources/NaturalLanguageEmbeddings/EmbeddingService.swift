@@ -132,8 +132,14 @@ extension EmbeddingService {
     /// - Parameters:
     ///   - query: The query string to search for
     ///   - embeddings: Array of pre-computed embeddings to search through
+    ///   - minimumSimilarity: Optional threshold to filter results. Only results with similarity >= this value are returned.
+    ///                        Recommended: 0.85 for relevant results, 0.90 for high confidence matches.
     /// - Returns: Array of (index, similarity) tuples sorted by similarity (descending)
-    func search(query: String, in embeddings: [[Double]]) async throws -> [(Int, Double)] {
+    func search(
+        query: String,
+        in embeddings: [[Double]],
+        minimumSimilarity: Double? = nil
+    ) async throws -> [(Int, Double)] {
         guard !embeddings.isEmpty else {
             return []
         }
@@ -148,16 +154,17 @@ extension EmbeddingService {
         let count = embeddings.count
         
         // For larger datasets (>= optimizationThreshold), use vDSP matrix-vector multiplication for better performance
-        if count < optimizationThreshold {
-            return searchSimple(queryEmbedding: queryEmbedding, embeddings: embeddings)
+        return if count < optimizationThreshold {
+            searchSimple(queryEmbedding: queryEmbedding, embeddings: embeddings, threshold: minimumSimilarity)
+        } else {
+            searchOptimized(
+                queryEmbedding: queryEmbedding,
+                embeddings: embeddings,
+                dimension: dimension,
+                count: count,
+                threshold: minimumSimilarity
+            )
         }
-        
-        return searchOptimized(
-            queryEmbedding: queryEmbedding,
-            embeddings: embeddings,
-            dimension: dimension,
-            count: count
-        )
     }
 }
 
@@ -165,12 +172,20 @@ extension EmbeddingService {
 
 private extension EmbeddingService {
     /// Simple search using basic cosine similarity (good for small datasets)
-    func searchSimple(queryEmbedding: [Double], embeddings: [[Double]]) -> [(Int, Double)] {
+    func searchSimple(queryEmbedding: [Double], embeddings: [[Double]], threshold: Double?) -> [(Int, Double)] {
         var results: [(Int, Double)] = []
         
         for (index, embedding) in embeddings.enumerated() {
             let similarity = cosineSimilarity(queryEmbedding, embedding)
-            results.append((index, similarity))
+            
+            // Filter during collection if threshold is specified
+            if let minSim = threshold {
+                if similarity >= minSim {
+                    results.append((index, similarity))
+                }
+            } else {
+                results.append((index, similarity))
+            }
         }
         
         return results.sorted { $0.1 > $1.1 }
@@ -204,7 +219,7 @@ private extension EmbeddingService {
 
 private extension EmbeddingService {
     /// Optimized search using vDSP matrix-vector multiplication (good for large datasets)
-    func searchOptimized(queryEmbedding: [Double], embeddings: [[Double]], dimension: Int, count: Int) -> [(Int, Double)] {
+    func searchOptimized(queryEmbedding: [Double], embeddings: [[Double]], dimension: Int, count: Int, threshold: Double?) -> [(Int, Double)] {
         // Build matrix of embeddings (row-major: each row is an embedding)
         var matrix = [Double]()
         matrix.reserveCapacity(count * dimension)
@@ -231,10 +246,17 @@ private extension EmbeddingService {
             vDSP_Length(dimension)       // P: number of columns in A / rows in B
         )
         
-        // Pair indices with similarities and sort
+        // Pair indices with similarities, filtering if threshold is specified
         var results: [(Int, Double)] = []
         for (index, similarity) in similarities.enumerated() {
-            results.append((index, similarity))
+            // Filter during collection if threshold is specified
+            if let minSim = threshold {
+                if similarity >= minSim {
+                    results.append((index, similarity))
+                }
+            } else {
+                results.append((index, similarity))
+            }
         }
         
         return results.sorted { $0.1 > $1.1 }
