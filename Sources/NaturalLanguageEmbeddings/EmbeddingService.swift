@@ -1,0 +1,208 @@
+import NaturalLanguage
+import CoreML
+import Accelerate
+
+public actor EmbeddingService {
+    private let model: NLContextualEmbedding
+    
+    public init(specific: ModelSpecific = .script(.latin)) async throws {
+        let model: NLContextualEmbedding?
+        switch specific {
+        case .language(let language):
+            model = NLContextualEmbedding(language: language)
+        case .script(let script):
+            model = NLContextualEmbedding(script: script)
+        case .modelIdentifier(let identifier):
+            model = NLContextualEmbedding(modelIdentifier: identifier)
+        }
+        
+        guard let model else {
+            throw EmbeddingError.modelUnavailable
+        }
+        
+        if !model.hasAvailableAssets {
+            logger.log("Requesting assets for model: \(model.modelIdentifier, privacy: .public)")
+            try await model.requestAssets()
+            logger.log("Assets available for model: \(model.modelIdentifier, privacy: .public)")
+        }
+        
+        self.model = model
+    }
+    
+    func modelInfo() -> String {
+        """
+Model Identifier: \(model.modelIdentifier)
+Dimension: \(model.dimension)
+Available Assets: \(model.hasAvailableAssets)
+Languages: \(model.languages.map { $0.rawValue })
+Scripts: \(model.scripts.map { $0.rawValue })
+"""
+    }
+}
+
+// MARK: - Encoding
+
+extension EmbeddingService {
+    /// Generates normalized embeddings for a sentence (using mean pooling and L2 normalization)
+    func generateEmbeddings(_ sentence: String, language: NLLanguage? = nil) async throws -> [Double] {
+        guard !sentence.isEmpty else {
+            throw EmbeddingError.generationFailed
+        }
+        
+        guard model.hasAvailableAssets else {
+            throw EmbeddingError.missingEmbeddingResource
+        }
+        
+        guard model.dimension > 0 else {
+            throw EmbeddingError.generationFailed
+        }
+        
+        let embedding = try model.embeddingResult(for: sentence, language: language)
+        let dimension = model.dimension
+        
+        // Initialize accumulator for mean pooling
+        var meanPooled = [Double](repeating: 0.0, count: dimension)
+        var tokenCount = 0
+        
+        // Accumulate token vectors in-place using vDSP (more efficient than storing all vectors)
+        embedding.enumerateTokenVectors(in: sentence.startIndex ..< sentence.endIndex) { (tokenVector, _) -> Bool in
+            vDSP_vaddD(meanPooled, 1, tokenVector, 1, &meanPooled, 1, vDSP_Length(dimension))
+            tokenCount += 1
+            return true
+        }
+        
+        // Divide by token count to get mean
+        guard tokenCount > 0 else {
+            throw EmbeddingError.generationFailed
+        }
+        
+        var divisor = Double(tokenCount)
+        vDSP_vsdivD(meanPooled, 1, &divisor, &meanPooled, 1, vDSP_Length(dimension))
+        
+        return normalize(meanPooled)
+    }
+    
+    private func normalize(_ embeddings: [Double]) -> [Double] {
+        // Compute L2 norm efficiently using vDSP
+        var sumSquares: Double = 0
+        let length = vDSP_Length(embeddings.count)
+        vDSP_svesqD(embeddings, 1, &sumSquares, length)
+        let norm = sqrt(sumSquares)
+        
+        guard norm > 1e-10 else {
+            // If norm is too small, return as-is to avoid division by zero
+            return embeddings
+        }
+        
+        // Divide by norm to normalize
+        var divisor = norm
+        var normalized = [Double](repeating: 0, count: embeddings.count)
+        vDSP_vsdivD(embeddings, 1, &divisor, &normalized, 1, length)
+        
+        return normalized
+    }
+}
+
+// MARK: - Search
+
+extension EmbeddingService {
+    /// Searches for the most similar embeddings to a query string
+    /// - Parameters:
+    ///   - query: The query string to search for
+    ///   - embeddings: Array of pre-computed embeddings to search through
+    /// - Returns: Array of (index, similarity) tuples sorted by similarity (descending)
+    func search(query: String, in embeddings: [[Double]]) async throws -> [(Int, Double)] {
+        guard !embeddings.isEmpty else {
+            return []
+        }
+        
+        let queryEmbedding = try await generateEmbeddings(query)
+        
+        guard queryEmbedding.count == embeddings.first!.count else {
+            throw EmbeddingError.unsupportedNormalization
+        }
+        
+        let dimension = queryEmbedding.count
+        let count = embeddings.count
+        
+        // For small datasets, use simple computation
+        // For larger datasets (>10), use vDSP matrix-vector multiplication for better performance
+        if count <= 2 {
+            return searchSimple(queryEmbedding: queryEmbedding, embeddings: embeddings)
+        } else {
+            return searchOptimized(queryEmbedding: queryEmbedding, embeddings: embeddings, dimension: dimension, count: count)
+        }
+    }
+    
+    /// Simple search using basic cosine similarity (good for small datasets)
+    private func searchSimple(queryEmbedding: [Double], embeddings: [[Double]]) -> [(Int, Double)] {
+        var results: [(Int, Double)] = []
+        
+        for (index, embedding) in embeddings.enumerated() {
+            let similarity = cosineSimilarity(queryEmbedding, embedding)
+            results.append((index, similarity))
+        }
+        
+        return results.sorted { $0.1 > $1.1 }
+    }
+    
+    /// Optimized search using vDSP matrix-vector multiplication (good for large datasets)
+    private func searchOptimized(queryEmbedding: [Double], embeddings: [[Double]], dimension: Int, count: Int) -> [(Int, Double)] {
+        // Build matrix of embeddings (row-major: each row is an embedding)
+        var matrix = [Double]()
+        matrix.reserveCapacity(count * dimension)
+        
+        for embedding in embeddings {
+            matrix.append(contentsOf: embedding)
+        }
+        
+        // Compute all similarities at once using vDSP matrix-vector multiplication
+        // Since embeddings are normalized, dot product = cosine similarity
+        var similarities = [Double](repeating: 0, count: count)
+        
+        // Matrix-vector multiplication: similarities = matrix × queryEmbedding
+        // A is count×dimension (embeddings), B is dimension×1 (query), C is count×1 (result)
+        vDSP_mmulD(
+            matrix,                      // Matrix A (count × dimension)
+            1,                           // Stride for A
+            queryEmbedding,              // Vector B (dimension × 1)
+            1,                           // Stride for B
+            &similarities,               // Result C (count × 1)
+            1,                           // Stride for C
+            vDSP_Length(count),          // M: number of rows in A
+            vDSP_Length(1),              // N: number of columns in B (1 for vector)
+            vDSP_Length(dimension)       // P: number of columns in A / rows in B
+        )
+        
+        // Pair indices with similarities and sort
+        var results: [(Int, Double)] = []
+        for (index, similarity) in similarities.enumerated() {
+            results.append((index, similarity))
+        }
+        
+        return results.sorted { $0.1 > $1.1 }
+    }
+    
+    /// Computes cosine similarity between two vectors
+    /// For normalized vectors, this is simply the dot product
+    private func cosineSimilarity(_ a: [Double], _ b: [Double]) -> Double {
+        precondition(a.count == b.count, "Vectors must have same dimensions")
+        
+        var dotProduct: Double = 0
+        vDSP_dotprD(a, 1, b, 1, &dotProduct, vDSP_Length(a.count))
+        
+        // For normalized vectors, dot product IS the cosine similarity
+        // But we compute magnitudes anyway for safety in case vectors aren't perfectly normalized
+        var magnitudeA: Double = 0
+        var magnitudeB: Double = 0
+        vDSP_svesqD(a, 1, &magnitudeA, vDSP_Length(a.count))
+        vDSP_svesqD(b, 1, &magnitudeB, vDSP_Length(b.count))
+        
+        magnitudeA = sqrt(magnitudeA)
+        magnitudeB = sqrt(magnitudeB)
+        
+        guard magnitudeA > 0 && magnitudeB > 0 else { return 0 }
+        
+        return dotProduct / (magnitudeA * magnitudeB)
+    }
+}
