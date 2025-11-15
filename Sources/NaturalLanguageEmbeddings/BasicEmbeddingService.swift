@@ -2,9 +2,11 @@ import Foundation
 import NaturalLanguage
 
 actor BasicEmbeddingService {
-    private let model: NLContextualEmbedding
+    var isModelAvailable: Bool { model.hasAvailableAssets }
     
-    public init(specific: ModelSpecific = .script(.latin)) async throws {
+    private let model: NLContextualEmbedding
+
+    init(specific: ModelSpecific = .script(.latin)) async throws {
         let model: NLContextualEmbedding?
         switch specific {
         case .language(let language):

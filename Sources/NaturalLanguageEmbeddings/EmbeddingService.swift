@@ -2,9 +2,16 @@ import NaturalLanguage
 import CoreML
 import Accelerate
 
+/// Service for generating and searching embeddings using NLContextualEmbedding models.
+/// Supports mean pooling and L2 normalization, as well as optimized search using vDSP.
 public actor EmbeddingService {
+    /// Indicates if the embedding model has its assets available.
+    public var isModelAvailable: Bool { model.hasAvailableAssets }
+    
     private let model: NLContextualEmbedding
     
+    /// Initializes the EmbeddingService with a specified model.
+    /// - Parameter specific: The model specification to use.
     public init(specific: ModelSpecific = .script(.latin)) async throws {
         let model: NLContextualEmbedding?
         switch specific {
@@ -29,7 +36,8 @@ public actor EmbeddingService {
         self.model = model
     }
     
-    func modelInfo() -> String {
+    /// Provides information about the loaded embedding model.
+    public func modelInfo() -> String {
         """
 Model Identifier: \(model.modelIdentifier)
 Dimension: \(model.dimension)
@@ -44,7 +52,7 @@ Scripts: \(model.scripts.map { $0.rawValue })
 
 extension EmbeddingService {
     /// Generates normalized embeddings for a sentence (using mean pooling and L2 normalization)
-    func generateEmbeddings(_ sentence: String, language: NLLanguage? = nil) async throws -> [Double] {
+    public func generateEmbeddings(_ sentence: String, language: NLLanguage? = nil) async throws -> [Double] {
         guard !sentence.isEmpty else {
             throw EmbeddingError.generationFailed
         }
@@ -125,17 +133,25 @@ extension EmbeddingService {
         let dimension = queryEmbedding.count
         let count = embeddings.count
         
-        // For small datasets, use simple computation
-        // For larger datasets (>10), use vDSP matrix-vector multiplication for better performance
-        if count <= 2 {
+        // For larger datasets (>100), use vDSP matrix-vector multiplication for better performance
+        if count < 100 {
             return searchSimple(queryEmbedding: queryEmbedding, embeddings: embeddings)
-        } else {
-            return searchOptimized(queryEmbedding: queryEmbedding, embeddings: embeddings, dimension: dimension, count: count)
         }
+        
+        return searchOptimized(
+            queryEmbedding: queryEmbedding,
+            embeddings: embeddings,
+            dimension: dimension,
+            count: count
+        )
     }
-    
+}
+
+// MARK: - Cosine Search Implementations
+
+private extension EmbeddingService {
     /// Simple search using basic cosine similarity (good for small datasets)
-    private func searchSimple(queryEmbedding: [Double], embeddings: [[Double]]) -> [(Int, Double)] {
+    func searchSimple(queryEmbedding: [Double], embeddings: [[Double]]) -> [(Int, Double)] {
         var results: [(Int, Double)] = []
         
         for (index, embedding) in embeddings.enumerated() {
@@ -146,8 +162,35 @@ extension EmbeddingService {
         return results.sorted { $0.1 > $1.1 }
     }
     
+    /// Computes cosine similarity between two vectors
+    /// For normalized vectors, this is simply the dot product
+    func cosineSimilarity(_ a: [Double], _ b: [Double]) -> Double {
+        precondition(a.count == b.count, "Vectors must have same dimensions")
+        
+        var dotProduct: Double = 0
+        vDSP_dotprD(a, 1, b, 1, &dotProduct, vDSP_Length(a.count))
+        
+        // For normalized vectors, dot product IS the cosine similarity
+        // But we compute magnitudes anyway for safety in case vectors aren't perfectly normalized
+        var magnitudeA: Double = 0
+        var magnitudeB: Double = 0
+        vDSP_svesqD(a, 1, &magnitudeA, vDSP_Length(a.count))
+        vDSP_svesqD(b, 1, &magnitudeB, vDSP_Length(b.count))
+        
+        magnitudeA = sqrt(magnitudeA)
+        magnitudeB = sqrt(magnitudeB)
+        
+        guard magnitudeA > 0 && magnitudeB > 0 else { return 0 }
+        
+        return dotProduct / (magnitudeA * magnitudeB)
+    }
+}
+
+// MARK: - Optimized Search
+
+private extension EmbeddingService {
     /// Optimized search using vDSP matrix-vector multiplication (good for large datasets)
-    private func searchOptimized(queryEmbedding: [Double], embeddings: [[Double]], dimension: Int, count: Int) -> [(Int, Double)] {
+    func searchOptimized(queryEmbedding: [Double], embeddings: [[Double]], dimension: Int, count: Int) -> [(Int, Double)] {
         // Build matrix of embeddings (row-major: each row is an embedding)
         var matrix = [Double]()
         matrix.reserveCapacity(count * dimension)
@@ -181,28 +224,5 @@ extension EmbeddingService {
         }
         
         return results.sorted { $0.1 > $1.1 }
-    }
-    
-    /// Computes cosine similarity between two vectors
-    /// For normalized vectors, this is simply the dot product
-    private func cosineSimilarity(_ a: [Double], _ b: [Double]) -> Double {
-        precondition(a.count == b.count, "Vectors must have same dimensions")
-        
-        var dotProduct: Double = 0
-        vDSP_dotprD(a, 1, b, 1, &dotProduct, vDSP_Length(a.count))
-        
-        // For normalized vectors, dot product IS the cosine similarity
-        // But we compute magnitudes anyway for safety in case vectors aren't perfectly normalized
-        var magnitudeA: Double = 0
-        var magnitudeB: Double = 0
-        vDSP_svesqD(a, 1, &magnitudeA, vDSP_Length(a.count))
-        vDSP_svesqD(b, 1, &magnitudeB, vDSP_Length(b.count))
-        
-        magnitudeA = sqrt(magnitudeA)
-        magnitudeB = sqrt(magnitudeB)
-        
-        guard magnitudeA > 0 && magnitudeB > 0 else { return 0 }
-        
-        return dotProduct / (magnitudeA * magnitudeB)
     }
 }
