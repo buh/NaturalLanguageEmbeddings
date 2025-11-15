@@ -10,9 +10,22 @@ public actor EmbeddingService {
     
     private let model: NLContextualEmbedding
     
+    /// Threshold for switching between simple and optimized search algorithms.
+    /// Datasets with fewer items use simple search, larger datasets use vDSP-optimized search.
+    /// Internal for testing purposes - allows verification that both algorithms produce identical results.
+    private let optimizationThreshold: Int
+    
     /// Initializes the EmbeddingService with a specified model.
     /// - Parameter specific: The model specification to use.
     public init(specific: ModelSpecific = .script(.latin)) async throws {
+        try await self.init(specific: specific, optimizationThreshold: 100)
+    }
+    
+    /// Internal initializer with configurable optimization threshold for testing.
+    /// - Parameters:
+    ///   - specific: The model specification to use.
+    ///   - optimizationThreshold: Threshold for using optimized search (internal, for testing).
+    init(specific: ModelSpecific = .script(.latin), optimizationThreshold: Int) async throws {
         let model: NLContextualEmbedding?
         switch specific {
         case .language(let language):
@@ -34,6 +47,7 @@ public actor EmbeddingService {
         }
         
         self.model = model
+        self.optimizationThreshold = optimizationThreshold
     }
     
     /// Provides information about the loaded embedding model.
@@ -133,8 +147,8 @@ extension EmbeddingService {
         let dimension = queryEmbedding.count
         let count = embeddings.count
         
-        // For larger datasets (>100), use vDSP matrix-vector multiplication for better performance
-        if count < 100 {
+        // For larger datasets (>= optimizationThreshold), use vDSP matrix-vector multiplication for better performance
+        if count < optimizationThreshold {
             return searchSimple(queryEmbedding: queryEmbedding, embeddings: embeddings)
         }
         
