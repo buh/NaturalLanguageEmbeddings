@@ -1,6 +1,6 @@
 # NaturalLanguageEmbeddings
 
-A Swift package for semantic text search using Apple's `NLContextualEmbedding` framework. Provides on-device, privacy-first text embeddings with optimized search algorithms for both small and large datasets.
+A Swift package for semantic text search using Apple's `NLContextualEmbedding` from `NaturalLanguage` framework. Provides on-device, privacy-first text embeddings with optimized search algorithms for both small and large datasets.
 
 ## Features
 
