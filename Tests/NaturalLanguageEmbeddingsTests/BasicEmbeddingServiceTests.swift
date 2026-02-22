@@ -109,6 +109,23 @@ struct BasicEmbeddingServiceTests {
         }
     }
 
+    @Test("generateEmbeddings returns L2-normalized vectors")
+    func testEmbeddingsAreNormalized() async throws {
+        let sentences = ["hello world", "machine learning", "the quick brown fox"]
+        for sentence in sentences {
+            let embedding = try await service.generateEmbeddings(sentence, language: .english)
+            let norm = sqrt(embedding.reduce(0) { $0 + $1 * $1 })
+            #expect(abs(norm - 1.0) < 1e-6, "Embedding for '\(sentence)' should be unit norm, got \(norm)")
+        }
+    }
+
+    @Test("generateEmbeddings throws on empty string")
+    func testEmptyStringThrows() async throws {
+        await #expect(throws: EmbeddingError.self) {
+            try await service.generateEmbeddings("")
+        }
+    }
+
     @Test("Test for indirect topics with expected rankings")
     func indirectTopics() async throws {
         let sentences = [
