@@ -191,27 +191,13 @@ private extension EmbeddingService {
         return results.sorted { $0.1 > $1.1 }
     }
     
-    /// Computes cosine similarity between two vectors
-    /// For normalized vectors, this is simply the dot product
+    /// Computes cosine similarity between two L2-normalized vectors.
+    /// Since generateEmbeddings always returns unit vectors, dot product equals cosine similarity.
     func cosineSimilarity(_ a: [Double], _ b: [Double]) -> Double {
         precondition(a.count == b.count, "Vectors must have same dimensions")
-        
         var dotProduct: Double = 0
         vDSP_dotprD(a, 1, b, 1, &dotProduct, vDSP_Length(a.count))
-        
-        // For normalized vectors, dot product IS the cosine similarity
-        // But we compute magnitudes anyway for safety in case vectors aren't perfectly normalized
-        var magnitudeA: Double = 0
-        var magnitudeB: Double = 0
-        vDSP_svesqD(a, 1, &magnitudeA, vDSP_Length(a.count))
-        vDSP_svesqD(b, 1, &magnitudeB, vDSP_Length(b.count))
-        
-        magnitudeA = sqrt(magnitudeA)
-        magnitudeB = sqrt(magnitudeB)
-        
-        guard magnitudeA > 0 && magnitudeB > 0 else { return 0 }
-        
-        return dotProduct / (magnitudeA * magnitudeB)
+        return min(max(dotProduct, -1.0), 1.0)
     }
 }
 
