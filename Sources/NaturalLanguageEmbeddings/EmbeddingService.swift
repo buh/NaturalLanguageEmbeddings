@@ -135,7 +135,7 @@ extension EmbeddingService {
     ///   - minimumSimilarity: Optional threshold to filter results. Only results with similarity >= this value are returned.
     ///                        Recommended: 0.85 for relevant results, 0.90 for high confidence matches.
     /// - Returns: Array of (index, similarity) tuples sorted by similarity (descending)
-    func search(
+    public func search(
         query: String,
         in embeddings: [[Double]],
         minimumSimilarity: Double? = nil
